@@ -13,7 +13,7 @@ GlobalWorkerOptions.workerSrc = new URL(
 const RENDER_SCALE = 1.35;
 const CHUNK_CHAR_TARGET = 880;
 const HEIGHT_PREFETCH_CONCURRENCY = 8;
-const SPEAK_RESTART_MS = 52;
+const SPEAK_RESTART_MS = 80;
 const THEME_KEY = 'pdf-audio-theme';
 const VOICE_URI_KEY = 'pdf-audio-voice-uri';
 
@@ -43,6 +43,7 @@ const els = {
   playPause: document.getElementById('play-pause'),
   stop: document.getElementById('stop'),
   rewindStart: document.getElementById('rewind-start'),
+  readFromHere: document.getElementById('read-from-here'),
 };
 
 /** @type {import('pdfjs-dist/build/pdf.mjs').PDFDocumentProxy | null} */
@@ -75,6 +76,10 @@ let voiceListOpen = false;
 
 let seekDragging = false;
 let seekResumePlayback = false;
+let seekPointerLastX = 0;
+
+/** @type {HTMLSpanElement[]} */
+let passageMarkEls = [];
 
 function isActivelyPlaying() {
   const s = window.speechSynthesis;
@@ -329,13 +334,19 @@ function formatClock(sec) {
 function ratioFromClientX(clientX) {
   const rect = els.seekTrack.getBoundingClientRect();
   if (rect.width <= 0) return 0;
-  return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  const x = clientX - rect.left;
+  if (x <= 2) return 0;
+  if (x >= rect.width - 2) return 1;
+  return Math.min(1, Math.max(0, x / rect.width));
 }
 
 function chunkIndexFromSeekRatio(ratio) {
   if (!chunks.length) return 0;
-  if (chunks.length === 1) return 0;
-  return Math.min(chunks.length - 1, Math.round(ratio * (chunks.length - 1)));
+  const max = chunks.length - 1;
+  if (max === 0) return 0;
+  const r = Math.min(1, Math.max(0, ratio));
+  const idx = Math.round(r * max + Number.EPSILON);
+  return Math.min(max, Math.max(0, idx));
 }
 
 function ratioFromChunkIndex(ci) {
@@ -386,7 +397,8 @@ function wireSeekScrubber() {
     } catch {
       /* ignore */
     }
-    applySeekClientX(e.clientX);
+    const finalX = e.type === 'pointercancel' ? seekPointerLastX : e.clientX;
+    applySeekClientX(finalX);
     if (seekResumePlayback) speakFromCurrent();
     seekResumePlayback = false;
   };
@@ -394,6 +406,7 @@ function wireSeekScrubber() {
   els.seekTrack.addEventListener('pointerdown', (e) => {
     if (!chunks.length || e.button !== 0) return;
     seekDragging = true;
+    seekPointerLastX = e.clientX;
     seekResumePlayback = isActivelyPlaying();
     if (seekResumePlayback) stopSpeech(false);
     try {
@@ -406,6 +419,7 @@ function wireSeekScrubber() {
 
   els.seekTrack.addEventListener('pointermove', (e) => {
     if (!seekDragging) return;
+    seekPointerLastX = e.clientX;
     applySeekClientX(e.clientX);
   });
 
@@ -430,13 +444,37 @@ function wireSeekScrubber() {
   });
 }
 
+function clearPassageMarks() {
+  for (const el of passageMarkEls) {
+    el.classList.remove('tts-passage-mark');
+  }
+  passageMarkEls = [];
+}
+
+function updatePassageMarks() {
+  clearPassageMarks();
+  if (!chunks.length || !orderedSpans.length) return;
+  const max = chunks.length - 1;
+  const ci = Math.min(Math.max(0, currentChunk), max);
+  const { start, end } = chunks[ci];
+  for (let i = start; i <= end; i++) {
+    const el = orderedSpans[i];
+    if (el?.isConnected) {
+      el.classList.add('tts-passage-mark');
+      passageMarkEls.push(el);
+    }
+  }
+}
+
 function syncChunkUi() {
   const max = Math.max(0, chunks.length - 1);
   els.chunk.max = String(max);
   els.chunk.value = String(Math.min(currentChunk, max));
   els.prevChunk.disabled = currentChunk <= 0;
   els.nextChunk.disabled = currentChunk >= max;
+  if (els.readFromHere) els.readFromHere.disabled = !chunks.length;
   updateSeekVisuals();
+  updatePassageMarks();
 }
 
 function chunkIndexForSpanIndex(spanIdx) {
@@ -688,11 +726,27 @@ function onViewerClick(ev) {
   const idx = orderedSpans.indexOf(span);
   if (idx < 0) return;
 
+  ev.preventDefault();
+
+  if (isActivelyPlaying()) stopSpeech(false);
+
   currentChunk = chunkIndexForSpanIndex(idx);
   syncChunkUi();
-  speakFromCurrent();
+
+  const ch = chunks[currentChunk];
+  const anchor = ch ? orderedSpans[ch.start] : null;
+  if (anchor instanceof HTMLElement) {
+    requestAnimationFrame(() => {
+      anchor.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }
+
   els.ttsPanel.classList.remove('hidden');
   els.ttsToggle.setAttribute('aria-expanded', 'true');
+
+  if (ev.ctrlKey || ev.metaKey) {
+    speakFromCurrent();
+  }
 }
 
 function wireUi() {
@@ -803,6 +857,11 @@ function wireUi() {
   els.rewindStart.addEventListener('click', () => {
     currentChunk = 0;
     syncChunkUi();
+    speakFromCurrent();
+  });
+
+  els.readFromHere?.addEventListener('click', () => {
+    if (!chunks.length) return;
     speakFromCurrent();
   });
 
