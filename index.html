@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Audio</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand">PDF Audio</div>
+          <button type="button" class="theme-btn" id="theme-toggle" title="Theme" aria-label="Switch to light theme">
+            <svg class="theme-svg theme-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+            <svg class="theme-svg theme-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" />
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+            </svg>
+          </button>
+        </div>
+        <label class="file-btn">
+          <input type="file" id="file-input" accept="application/pdf" hidden />
+          Open PDF
+        </label>
+      </header>
+
+      <main class="stage" id="stage">
+        <div class="empty-state" id="empty-state">
+          <p class="empty-title">Drop a PDF here</p>
+          <p class="empty-hint">or use Open PDF — then click any line to start reading from there.</p>
+        </div>
+        <div id="viewer" class="viewer hidden" aria-label="PDF viewer"></div>
+      </main>
+
+      <button
+        type="button"
+        class="tts-fab"
+        id="tts-toggle"
+        aria-expanded="false"
+        aria-controls="tts-panel"
+        title="Reading controls"
+      >
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+        </svg>
+      </button>
+
+      <aside class="tts-panel hidden" id="tts-panel" role="dialog" aria-label="Text to speech">
+        <div class="field">
+          <label class="field-label" for="rate">Speed <span id="rate-label" class="field-value">1×</span></label>
+          <input type="range" id="rate" min="0.5" max="2" step="0.05" value="1" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="voice">Voice</label>
+          <select id="voice"></select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="chunk">Passage</label>
+          <div class="passage-row">
+            <button type="button" class="icon-btn" id="prev-chunk" aria-label="Previous passage">‹</button>
+            <input type="range" id="chunk" min="0" max="0" value="0" />
+            <button type="button" class="icon-btn" id="next-chunk" aria-label="Next passage">›</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Playback</span>
+          <div class="playback-row">
+            <button type="button" class="pill" id="rewind-start">Start</button>
+            <button type="button" class="pill pill-primary" id="play-pause">Play</button>
+            <button type="button" class="pill" id="stop">Stop</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
