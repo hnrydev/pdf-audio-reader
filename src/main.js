@@ -15,6 +15,7 @@ const CHUNK_CHAR_TARGET = 880;
 const HEIGHT_PREFETCH_CONCURRENCY = 8;
 const SPEAK_RESTART_MS = 52;
 const THEME_KEY = 'pdf-audio-theme';
+const VOICE_URI_KEY = 'pdf-audio-voice-uri';
 
 const els = {
   fileInput: document.getElementById('file-input'),
@@ -26,8 +27,17 @@ const els = {
   themeToggle: document.getElementById('theme-toggle'),
   rate: document.getElementById('rate'),
   rateLabel: document.getElementById('rate-label'),
-  voice: document.getElementById('voice'),
+  voiceTrigger: document.getElementById('voice-trigger'),
+  voiceTriggerLabel: document.getElementById('voice-trigger-label'),
+  voicePanel: document.getElementById('voice-panel'),
+  voiceFilter: document.getElementById('voice-filter'),
+  voiceListbox: document.getElementById('voice-listbox'),
+  voiceField: document.getElementById('voice-field'),
   chunk: document.getElementById('chunk'),
+  seekTrack: document.getElementById('seek-track'),
+  seekFill: document.getElementById('seek-fill'),
+  seekThumb: document.getElementById('seek-thumb'),
+  seekTime: document.getElementById('seek-time'),
   prevChunk: document.getElementById('prev-chunk'),
   nextChunk: document.getElementById('next-chunk'),
   playPause: document.getElementById('play-pause'),
@@ -57,6 +67,15 @@ let restartDebounceTimer = 0;
 const rendered = new Set();
 let io = null;
 
+/** @type {string} */
+let selectedVoiceUri = '';
+/** @type {SpeechSynthesisVoice[]} */
+let cachedSortedVoices = [];
+let voiceListOpen = false;
+
+let seekDragging = false;
+let seekResumePlayback = false;
+
 function isActivelyPlaying() {
   const s = window.speechSynthesis;
   return ttsArmed || speaking || s.speaking || s.pending || s.paused;
@@ -79,7 +98,7 @@ function applyTheme(theme) {
 }
 
 function initTheme() {
-  let t = 'dark';
+  let t = 'light';
   try {
     const stored = localStorage.getItem(THEME_KEY);
     if (stored === 'light' || stored === 'dark') t = stored;
@@ -94,32 +113,137 @@ function formatRate(v) {
   return `${n}×`;
 }
 
-function populateVoices() {
-  const sel = els.voice;
-  const voices = window.speechSynthesis.getVoices().slice().sort((a, b) => {
+function readStoredVoiceUri() {
+  try {
+    return localStorage.getItem(VOICE_URI_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStoredVoiceUri(uri) {
+  try {
+    if (uri) localStorage.setItem(VOICE_URI_KEY, uri);
+  } catch {
+    /* ignore */
+  }
+}
+
+function pickVoiceUri(voices, previousUri, storedUri) {
+  const byUri = (uri) => uri && voices.some((v) => v.voiceURI === uri);
+  if (byUri(previousUri)) return previousUri;
+  if (byUri(storedUri)) return storedUri;
+  const nav = voices.find((v) => v.lang.startsWith(navigator.language));
+  if (nav) return nav.voiceURI;
+  return voices[0]?.voiceURI || '';
+}
+
+function formatVoiceLabel(v) {
+  const scope = v.localService ? 'Local' : 'Browser';
+  return `${v.name} — ${v.lang} (${scope})`;
+}
+
+function sortVoicesList(raw) {
+  return raw.slice().sort((a, b) => {
     const la = (a.localService ? '0' : '1') + a.name;
     const lb = (b.localService ? '0' : '1') + b.name;
     return la.localeCompare(lb);
   });
-  sel.innerHTML = '';
-  for (const v of voices) {
-    const o = document.createElement('option');
-    o.value = v.voiceURI;
-    const scope = v.localService ? 'Local' : 'Browser';
-    o.textContent = `${v.name} — ${v.lang} (${scope})`;
-    o.dataset.voiceUri = v.voiceURI;
-    sel.append(o);
-  }
-  if (voices.length && !sel.value) {
-    const preferred =
-      voices.find((v) => v.lang.startsWith(navigator.language)) || voices[0];
-    sel.value = preferred.voiceURI;
-  }
+}
+
+function populateVoices() {
+  const raw = window.speechSynthesis.getVoices();
+  if (!raw.length) return;
+
+  const previousUri = selectedVoiceUri;
+  const storedUri = readStoredVoiceUri();
+
+  cachedSortedVoices = sortVoicesList(raw);
+  const chosen = pickVoiceUri(cachedSortedVoices, previousUri, storedUri);
+  selectedVoiceUri = chosen || '';
+  syncVoiceTriggerLabel();
+  hideVoiceList();
 }
 
 function getSelectedVoice() {
-  const uri = els.voice.value;
-  return window.speechSynthesis.getVoices().find((v) => v.voiceURI === uri) || null;
+  const fromCache = cachedSortedVoices.find((v) => v.voiceURI === selectedVoiceUri);
+  if (fromCache) return fromCache;
+  return window.speechSynthesis.getVoices().find((v) => v.voiceURI === selectedVoiceUri) || null;
+}
+
+function syncVoiceTriggerLabel() {
+  const v = getSelectedVoice();
+  const label = v ? formatVoiceLabel(v) : 'Choose a voice…';
+  els.voiceTriggerLabel.textContent = label;
+  els.voiceTriggerLabel.title = v ? formatVoiceLabel(v) : '';
+}
+
+function clearVoiceFilter() {
+  els.voiceFilter.value = '';
+}
+
+function voiceMatchesFilter(v, q) {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  const hay = `${v.name} ${v.lang} ${v.voiceURI}`.toLowerCase();
+  return hay.includes(needle);
+}
+
+function renderVoiceListbox() {
+  const q = els.voiceFilter.value;
+  const frag = document.createDocumentFragment();
+  for (const v of cachedSortedVoices) {
+    if (!voiceMatchesFilter(v, q)) continue;
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option');
+    li.className = 'voice-option';
+    if (v.voiceURI === selectedVoiceUri) li.classList.add('is-selected');
+    li.setAttribute('aria-selected', v.voiceURI === selectedVoiceUri ? 'true' : 'false');
+    li.textContent = formatVoiceLabel(v);
+    li.dataset.voiceUri = v.voiceURI;
+    li.tabIndex = -1;
+    li.addEventListener('mousedown', (e) => e.preventDefault());
+    li.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      selectVoiceByUri(v.voiceURI);
+    });
+    frag.appendChild(li);
+  }
+  if (!frag.childNodes.length) {
+    const empty = document.createElement('li');
+    empty.className = 'voice-option voice-option-empty';
+    empty.textContent = q.trim()
+      ? 'No voices match — try a shorter search'
+      : 'No voices available';
+    frag.appendChild(empty);
+  }
+  els.voiceListbox.replaceChildren(frag);
+  const first = els.voiceListbox.querySelector('.voice-option:not(.voice-option-empty)');
+  first?.scrollIntoView({ block: 'nearest' });
+}
+
+function showVoiceList() {
+  voiceListOpen = true;
+  els.voicePanel.hidden = false;
+  els.voiceTrigger.setAttribute('aria-expanded', 'true');
+  renderVoiceListbox();
+  window.setTimeout(() => els.voiceFilter.focus(), 0);
+}
+
+function hideVoiceList() {
+  voiceListOpen = false;
+  els.voicePanel.hidden = true;
+  els.voiceTrigger.setAttribute('aria-expanded', 'false');
+  clearVoiceFilter();
+}
+
+function selectVoiceByUri(uri) {
+  if (!cachedSortedVoices.some((v) => v.voiceURI === uri)) return;
+  selectedVoiceUri = uri;
+  writeStoredVoiceUri(uri);
+  syncVoiceTriggerLabel();
+  hideVoiceList();
+  scheduleRestartIfPlaying();
 }
 
 function joinChunkParts(parts) {
@@ -180,12 +304,139 @@ function rebuildReadingOrder() {
   if (wasSpeaking) stopSpeech(false);
 }
 
+function estimateChunkSeconds(text, rate) {
+  const r = Math.max(0.5, rate);
+  const chars = Math.max(1, text.length);
+  return Math.max(1.2, chars / (12.5 * r));
+}
+
+function chunkTimeStartsAndTotal() {
+  const rate = Number(els.rate.value) || 1;
+  const starts = [0];
+  for (let i = 0; i < chunks.length; i++) {
+    starts.push(starts[i] + estimateChunkSeconds(chunks[i].text, rate));
+  }
+  return { starts, total: starts[starts.length - 1] || 0 };
+}
+
+function formatClock(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, '0')}`;
+}
+
+function ratioFromClientX(clientX) {
+  const rect = els.seekTrack.getBoundingClientRect();
+  if (rect.width <= 0) return 0;
+  return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+}
+
+function chunkIndexFromSeekRatio(ratio) {
+  if (!chunks.length) return 0;
+  if (chunks.length === 1) return 0;
+  return Math.min(chunks.length - 1, Math.round(ratio * (chunks.length - 1)));
+}
+
+function ratioFromChunkIndex(ci) {
+  if (!chunks.length || chunks.length === 1) return 0;
+  return ci / (chunks.length - 1);
+}
+
+function updateSeekVisuals() {
+  if (!els.seekTime) return;
+  if (!chunks.length) {
+    els.seekTime.textContent = '0:00 / 0:00';
+    els.seekFill.style.width = '0%';
+    els.seekThumb.style.left = '0%';
+    els.seekTrack.setAttribute('aria-valuemax', '0');
+    els.seekTrack.setAttribute('aria-valuenow', '0');
+    els.seekTrack.setAttribute('aria-valuetext', 'No document loaded');
+    return;
+  }
+  const { starts, total } = chunkTimeStartsAndTotal();
+  const max = chunks.length - 1;
+  const safeChunk = Math.min(currentChunk, max);
+  const elapsed = starts[safeChunk] ?? 0;
+  els.seekTime.textContent = `${formatClock(elapsed)} / ${formatClock(total)}`;
+  const pct = ratioFromChunkIndex(safeChunk) * 100;
+  els.seekFill.style.width = `${pct}%`;
+  els.seekThumb.style.left = `${pct}%`;
+  els.seekTrack.setAttribute('aria-valuemax', String(max));
+  els.seekTrack.setAttribute('aria-valuenow', String(safeChunk));
+  els.seekTrack.setAttribute(
+    'aria-valuetext',
+    `Passage ${safeChunk + 1} of ${chunks.length}, about ${formatClock(elapsed)}`,
+  );
+}
+
+function applySeekClientX(clientX) {
+  if (!chunks.length) return;
+  const ratio = ratioFromClientX(clientX);
+  currentChunk = chunkIndexFromSeekRatio(ratio);
+  syncChunkUi();
+}
+
+function wireSeekScrubber() {
+  const endSeek = (e) => {
+    if (!seekDragging) return;
+    seekDragging = false;
+    try {
+      els.seekTrack.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    applySeekClientX(e.clientX);
+    if (seekResumePlayback) speakFromCurrent();
+    seekResumePlayback = false;
+  };
+
+  els.seekTrack.addEventListener('pointerdown', (e) => {
+    if (!chunks.length || e.button !== 0) return;
+    seekDragging = true;
+    seekResumePlayback = isActivelyPlaying();
+    if (seekResumePlayback) stopSpeech(false);
+    try {
+      els.seekTrack.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    applySeekClientX(e.clientX);
+  });
+
+  els.seekTrack.addEventListener('pointermove', (e) => {
+    if (!seekDragging) return;
+    applySeekClientX(e.clientX);
+  });
+
+  els.seekTrack.addEventListener('pointerup', endSeek);
+  els.seekTrack.addEventListener('pointercancel', endSeek);
+
+  els.seekTrack.addEventListener('keydown', (e) => {
+    if (!chunks.length) return;
+    const max = chunks.length - 1;
+    let next = currentChunk;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = Math.min(max, currentChunk + 1);
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = Math.max(0, currentChunk - 1);
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = max;
+    else return;
+    e.preventDefault();
+    const was = isActivelyPlaying();
+    if (was) stopSpeech(false);
+    currentChunk = next;
+    syncChunkUi();
+    if (was) speakFromCurrent();
+  });
+}
+
 function syncChunkUi() {
   const max = Math.max(0, chunks.length - 1);
   els.chunk.max = String(max);
   els.chunk.value = String(Math.min(currentChunk, max));
   els.prevChunk.disabled = currentChunk <= 0;
   els.nextChunk.disabled = currentChunk >= max;
+  updateSeekVisuals();
 }
 
 function chunkIndexForSpanIndex(spanIdx) {
@@ -457,10 +708,45 @@ function wireUi() {
   els.rate.addEventListener('input', () => {
     els.rateLabel.textContent = formatRate(els.rate.value);
     scheduleRestartIfPlaying();
+    updateSeekVisuals();
   });
   els.rateLabel.textContent = formatRate(els.rate.value);
 
-  els.voice.addEventListener('change', () => scheduleRestartIfPlaying());
+  els.voiceTrigger.addEventListener('click', () => {
+    if (voiceListOpen) hideVoiceList();
+    else showVoiceList();
+  });
+
+  els.voiceFilter.addEventListener('input', () => {
+    renderVoiceListbox();
+  });
+
+  els.voiceFilter.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      hideVoiceList();
+      els.voiceTrigger.focus();
+    }
+  });
+
+  els.voiceTrigger.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!voiceListOpen) showVoiceList();
+    }
+  });
+
+  document.addEventListener(
+    'mousedown',
+    (e) => {
+      if (!(e.target instanceof Node)) return;
+      if (!voiceListOpen) return;
+      if (els.voiceField.contains(e.target)) return;
+      hideVoiceList();
+    },
+    true,
+  );
 
   window.speechSynthesis.addEventListener('voiceschanged', populateVoices);
   populateVoices();
@@ -486,6 +772,8 @@ function wireUi() {
   });
 
   els.viewer.addEventListener('click', onViewerClick);
+
+  wireSeekScrubber();
 
   els.ttsToggle.addEventListener('click', () => {
     const open = els.ttsPanel.classList.toggle('hidden');
@@ -522,6 +810,8 @@ function wireUi() {
     if (e.code !== 'Space') return;
     const t = e.target;
     if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+    if (t === els.voiceTrigger) return;
+    if (t instanceof Node && els.seekTrack.contains(t)) return;
     if (!chunks.length) return;
     e.preventDefault();
     togglePlayPause();

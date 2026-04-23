@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>Sona</title>
+  <style>
+    .s {
+      fill: #12121a;
+      font: 700 21px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      .s {
+        fill: #ececf1;
+      }
+    }
+  </style>
+  <text class="s" x="16" y="16" dominant-baseline="central" text-anchor="middle">S</text>
+</svg>

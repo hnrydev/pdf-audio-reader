@@ -1,30 +1,34 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PDF Audio</title>
+    <title>Sona</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
     <div id="app">
       <header class="topbar">
-        <div class="topbar-left">
-          <div class="brand">PDF Audio</div>
-          <button type="button" class="theme-btn" id="theme-toggle" title="Theme" aria-label="Switch to light theme">
-            <svg class="theme-svg theme-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <span class="app-title">Sona</span>
+        <div class="topbar-right">
+          <label class="file-btn">
+            <input type="file" id="file-input" accept="application/pdf" hidden />
+            Open PDF
+          </label>
+          <button type="button" class="theme-btn" id="theme-toggle" title="Theme" aria-label="Switch to dark theme">
+            <svg class="theme-svg theme-moon" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
             </svg>
-            <svg class="theme-svg theme-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <svg class="theme-svg theme-sun" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="4" />
               <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
             </svg>
           </button>
         </div>
-        <label class="file-btn">
-          <input type="file" id="file-input" accept="application/pdf" hidden />
-          Open PDF
-        </label>
       </header>
 
       <main class="stage" id="stage">
@@ -55,17 +59,57 @@
           <label class="field-label" for="rate">Speed <span id="rate-label" class="field-value">1×</span></label>
           <input type="range" id="rate" min="0.5" max="2" step="0.05" value="1" />
         </div>
-        <div class="field">
-          <label class="field-label" for="voice">Voice</label>
-          <select id="voice"></select>
+        <div class="field voice-field-wrap">
+          <label class="field-label" for="voice-trigger">Voice</label>
+          <div class="voice-dropdown" id="voice-field">
+            <button
+              type="button"
+              class="voice-trigger"
+              id="voice-trigger"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="voice-panel"
+            >
+              <span class="voice-trigger-text" id="voice-trigger-label">Choose a voice…</span>
+              <span class="voice-trigger-chevron" aria-hidden="true">▾</span>
+            </button>
+            <div class="voice-panel" id="voice-panel" hidden>
+              <input
+                type="search"
+                class="voice-panel-search"
+                id="voice-filter"
+                placeholder="Type d, da-DK, danish…"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <ul id="voice-listbox" class="voice-listbox" role="listbox"></ul>
+            </div>
+          </div>
         </div>
-        <div class="field">
-          <label class="field-label" for="chunk">Passage</label>
-          <div class="passage-row">
+        <div class="field seek-field">
+          <div class="field-label seek-label-row">
+            <span>Position</span>
+            <span id="seek-time" class="field-value">0:00 / 0:00</span>
+          </div>
+          <div class="seek-passage-row">
             <button type="button" class="icon-btn" id="prev-chunk" aria-label="Previous passage">‹</button>
-            <input type="range" id="chunk" min="0" max="0" value="0" />
+            <div
+              class="seek-track"
+              id="seek-track"
+              role="slider"
+              tabindex="0"
+              aria-label="Reading position"
+              aria-valuemin="0"
+              aria-valuemax="0"
+              aria-valuenow="0"
+              aria-valuetext=""
+            >
+              <div class="seek-fill" id="seek-fill"></div>
+              <div class="seek-thumb" id="seek-thumb"></div>
+            </div>
             <button type="button" class="icon-btn" id="next-chunk" aria-label="Next passage">›</button>
           </div>
+          <input type="range" id="chunk" class="sr-only" min="0" max="0" value="0" aria-hidden="true" tabindex="-1" />
         </div>
         <div class="field">
           <span class="field-label">Playback</span>
