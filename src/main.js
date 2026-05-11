@@ -43,7 +43,6 @@ const els = {
   playPause: document.getElementById('play-pause'),
   stop: document.getElementById('stop'),
   rewindStart: document.getElementById('rewind-start'),
-  readFromHere: document.getElementById('read-from-here'),
 };
 
 /** @type {import('pdfjs-dist/build/pdf.mjs').PDFDocumentProxy | null} */
@@ -78,8 +77,12 @@ let seekDragging = false;
 let seekResumePlayback = false;
 let seekPointerLastX = 0;
 
-/** @type {HTMLSpanElement[]} */
-let passageMarkEls = [];
+/** @type {{ spanIndex: number; offset: number } | null} */
+let readAnchor = null;
+/** @type {{ spanIndex: number; offset: number } | null} */
+let visualAnchor = null;
+/** @type {{ chunkIndex: number; plan: { text: string; segments: any[] }; startedAt: number; rate: number; boundarySeen: boolean } | null} */
+let activeSpeech = null;
 
 function isActivelyPlaying() {
   const s = window.speechSynthesis;
@@ -255,6 +258,10 @@ function joinChunkParts(parts) {
   return parts.join(' ').replace(/\s+/g, ' ').trim();
 }
 
+function spanReadableText(span) {
+  return (span.textContent || '').replace(/\u00a0/g, ' ');
+}
+
 /**
  * @param {HTMLSpanElement[]} spans
  */
@@ -277,7 +284,7 @@ function buildChunksFromSpans(spans) {
   };
 
   for (let i = 0; i < spans.length; i++) {
-    const raw = (spans[i].textContent || '').replace(/\u00a0/g, ' ');
+    const raw = spanReadableText(spans[i]);
     const t = raw.replace(/\s+/g, ' ').trim();
     if (!t) continue;
 
@@ -305,6 +312,7 @@ function rebuildReadingOrder() {
   orderedSpans = next;
   chunks = buildChunksFromSpans(orderedSpans);
   currentChunk = Math.min(currentChunk, Math.max(0, chunks.length - 1));
+  if (!isAnchorInChunk(readAnchor, currentChunk)) resetReadAnchorToCurrentChunk();
   syncChunkUi();
   if (wasSpeaking) stopSpeech(false);
 }
@@ -385,6 +393,7 @@ function applySeekClientX(clientX) {
   if (!chunks.length) return;
   const ratio = ratioFromClientX(clientX);
   currentChunk = chunkIndexFromSeekRatio(ratio);
+  resetReadAnchorToCurrentChunk();
   syncChunkUi();
 }
 
@@ -439,31 +448,195 @@ function wireSeekScrubber() {
     const was = isActivelyPlaying();
     if (was) stopSpeech(false);
     currentChunk = next;
+    resetReadAnchorToCurrentChunk();
     syncChunkUi();
     if (was) speakFromCurrent();
   });
 }
 
-function clearPassageMarks() {
-  for (const el of passageMarkEls) {
-    el.classList.remove('tts-passage-mark');
+function chunkStartAnchor(ci) {
+  const chunk = chunks[ci];
+  return chunk ? { spanIndex: chunk.start, offset: 0 } : null;
+}
+
+function isAnchorInChunk(anchor, ci) {
+  const chunk = chunks[ci];
+  if (!anchor || !chunk) return false;
+  return anchor.spanIndex >= chunk.start && anchor.spanIndex <= chunk.end;
+}
+
+function resetReadAnchorToCurrentChunk() {
+  readAnchor = chunkStartAnchor(currentChunk);
+  visualAnchor = readAnchor ? { ...readAnchor } : null;
+}
+
+function textNodeForSpan(span) {
+  for (const node of span.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) return node;
   }
-  passageMarkEls = [];
+  return null;
+}
+
+function clampTextOffset(span, offset) {
+  const len = spanReadableText(span).length;
+  return Math.min(len, Math.max(0, offset));
+}
+
+function cleanedTextWithOffsets(raw, startOffset = 0) {
+  let text = '';
+  /** @type {number[]} */
+  const offsets = [];
+  let pendingSpaceOffset = -1;
+  let seenText = false;
+
+  for (let i = startOffset; i < raw.length; i++) {
+    const ch = raw[i];
+    if (/\s/.test(ch)) {
+      if (seenText && pendingSpaceOffset < 0) pendingSpaceOffset = i;
+      continue;
+    }
+
+    if (pendingSpaceOffset >= 0 && text) {
+      text += ' ';
+      offsets.push(pendingSpaceOffset);
+      pendingSpaceOffset = -1;
+    }
+
+    text += ch;
+    offsets.push(i);
+    seenText = true;
+  }
+
+  return { text, offsets };
+}
+
+function speechPlanForChunk(ci, anchor = null) {
+  const chunk = chunks[ci];
+  if (!chunk) return { text: '', segments: [] };
+
+  const startIndex = isAnchorInChunk(anchor, ci) ? anchor.spanIndex : chunk.start;
+  const startOffset = isAnchorInChunk(anchor, ci)
+    ? clampTextOffset(orderedSpans[startIndex], anchor.offset)
+    : 0;
+  const parts = [];
+  const segments = [];
+  let spokenPos = 0;
+
+  for (let i = startIndex; i <= chunk.end; i++) {
+    const span = orderedSpans[i];
+    if (!span) continue;
+    const raw = spanReadableText(span);
+    const part = cleanedTextWithOffsets(raw, i === startIndex ? startOffset : 0);
+    if (!part.text) continue;
+
+    if (parts.length) spokenPos += 1;
+    parts.push(part.text);
+    segments.push({
+      spanIndex: i,
+      spokenStart: spokenPos,
+      spokenEnd: spokenPos + part.text.length,
+      offsets: part.offsets,
+    });
+    spokenPos += part.text.length;
+  }
+
+  return { text: parts.join(' '), segments };
+}
+
+function anchorFromSpeechChar(plan, charIndex) {
+  if (!plan.segments.length) return readAnchor;
+  const idx = Math.max(0, Number(charIndex) || 0);
+
+  for (const segment of plan.segments) {
+    if (idx < segment.spokenStart) {
+      return {
+        spanIndex: segment.spanIndex,
+        offset: segment.offsets[0] ?? 0,
+      };
+    }
+    if (idx <= segment.spokenEnd) {
+      const local = Math.min(segment.offsets.length - 1, Math.max(0, idx - segment.spokenStart));
+      return {
+        spanIndex: segment.spanIndex,
+        offset: segment.offsets[local] ?? 0,
+      };
+    }
+  }
+
+  const last = plan.segments[plan.segments.length - 1];
+  return {
+    spanIndex: last.spanIndex,
+    offset: (last.offsets[last.offsets.length - 1] ?? 0) + 1,
+  };
+}
+
+function updateAnchorFromActiveSpeechEstimate() {
+  if (!activeSpeech || activeSpeech.boundarySeen) return;
+  if (activeSpeech.chunkIndex !== currentChunk) return;
+
+  const elapsedSeconds = Math.max(0, (performance.now() - activeSpeech.startedAt) / 1000);
+  const estimatedCharIndex = Math.floor(elapsedSeconds * 12.5 * Math.max(0.5, activeSpeech.rate));
+  const nextAnchor = anchorFromSpeechChar(activeSpeech.plan, estimatedCharIndex);
+  if (!nextAnchor) return;
+
+  readAnchor = nextAnchor;
+}
+
+function clearPassageMarks() {
+  els.viewer.querySelectorAll('.tts-mark-layer').forEach((el) => el.remove());
+}
+
+function ensureMarkLayer(pageInner) {
+  let layer = pageInner.querySelector('.tts-mark-layer');
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.className = 'tts-mark-layer';
+    pageInner.append(layer);
+  }
+  return layer;
+}
+
+function addLineMarker(span, rect) {
+  if (rect.width <= 0 || rect.height <= 0) return;
+  const pageInner = span.closest('.page-inner');
+  if (!(pageInner instanceof HTMLElement)) return;
+
+  const pageRect = pageInner.getBoundingClientRect();
+  const marker = document.createElement('div');
+  marker.className = 'tts-start-marker';
+  marker.style.left = `${rect.left - pageRect.left - 7}px`;
+  marker.style.top = `${rect.top - pageRect.top}px`;
+  marker.style.height = `${rect.height}px`;
+  ensureMarkLayer(pageInner).append(marker);
 }
 
 function updatePassageMarks() {
   clearPassageMarks();
   if (!chunks.length || !orderedSpans.length) return;
-  const max = chunks.length - 1;
-  const ci = Math.min(Math.max(0, currentChunk), max);
-  const { start, end } = chunks[ci];
-  for (let i = start; i <= end; i++) {
-    const el = orderedSpans[i];
-    if (el?.isConnected) {
-      el.classList.add('tts-passage-mark');
-      passageMarkEls.push(el);
-    }
+
+  const anchor = visualAnchor || readAnchor || chunkStartAnchor(currentChunk);
+  const span = anchor ? orderedSpans[anchor.spanIndex] : null;
+  const node = span ? textNodeForSpan(span) : null;
+  if (!span?.isConnected || !node) return;
+
+  const len = node.textContent?.length || 0;
+  const offset = Math.min(len, Math.max(0, anchor.offset));
+  const range = document.createRange();
+  const start = offset >= len && len > 0 ? len - 1 : offset;
+  const end = Math.min(len, start + 1);
+
+  if (end <= start) {
+    range.detach();
+    return;
   }
+
+  range.setStart(node, start);
+  range.setEnd(node, end);
+  const rect = range.getBoundingClientRect();
+  range.detach();
+  if (rect.width <= 0 && rect.height <= 0) return;
+
+  addLineMarker(span, rect);
 }
 
 function syncChunkUi() {
@@ -472,7 +645,6 @@ function syncChunkUi() {
   els.chunk.value = String(Math.min(currentChunk, max));
   els.prevChunk.disabled = currentChunk <= 0;
   els.nextChunk.disabled = currentChunk >= max;
-  if (els.readFromHere) els.readFromHere.disabled = !chunks.length;
   updateSeekVisuals();
   updatePassageMarks();
 }
@@ -501,13 +673,20 @@ function stopSpeech(resetChunk = false) {
   }
   speaking = false;
   paused = false;
+  activeSpeech = null;
   els.playPause.textContent = 'Play';
-  if (resetChunk) currentChunk = 0;
+  if (resetChunk) {
+    currentChunk = 0;
+    resetReadAnchorToCurrentChunk();
+  }
   syncChunkUi();
 }
 
 function speakFromCurrent() {
   if (!chunks.length) return;
+  if (!isAnchorInChunk(readAnchor, currentChunk)) resetReadAnchorToCurrentChunk();
+  const firstChunk = currentChunk;
+  const firstAnchor = readAnchor ? { ...readAnchor } : chunkStartAnchor(currentChunk);
 
   if (speakScheduleTimer) {
     window.clearTimeout(speakScheduleTimer);
@@ -517,6 +696,7 @@ function speakFromCurrent() {
   const myGen = speakGen;
   ttsArmed = true;
   window.speechSynthesis.cancel();
+  activeSpeech = null;
   try {
     window.speechSynthesis.resume();
   } catch {
@@ -539,15 +719,37 @@ function speakFromCurrent() {
       if (i >= chunks.length) {
         stopSpeech(false);
         currentChunk = Math.max(0, chunks.length - 1);
+        resetReadAnchorToCurrentChunk();
         syncChunkUi();
         return;
       }
       currentChunk = i;
+      readAnchor = i === firstChunk ? firstAnchor : chunkStartAnchor(i);
       syncChunkUi();
-      const u = new SpeechSynthesisUtterance(chunks[i].text);
-      u.rate = Number(els.rate.value) || 1;
+      const plan = speechPlanForChunk(i, readAnchor);
+      if (!plan.text) {
+        run(i + 1);
+        return;
+      }
+      const rate = Number(els.rate.value) || 1;
+      activeSpeech = {
+        chunkIndex: i,
+        plan,
+        startedAt: performance.now(),
+        rate,
+        boundarySeen: false,
+      };
+      const u = new SpeechSynthesisUtterance(plan.text);
+      u.rate = rate;
       const voice = getSelectedVoice();
       if (voice) u.voice = voice;
+      u.onboundary = (e) => {
+        if (myGen !== speakGen || typeof e.charIndex !== 'number') return;
+        const nextAnchor = anchorFromSpeechChar(plan, e.charIndex);
+        if (!nextAnchor) return;
+        if (activeSpeech?.plan === plan) activeSpeech.boundarySeen = true;
+        readAnchor = nextAnchor;
+      };
       u.onend = () => {
         if (myGen !== speakGen) return;
         run(i + 1);
@@ -599,7 +801,10 @@ function scheduleRestartIfPlaying() {
   restartDebounceTimer = window.setTimeout(() => {
     restartDebounceTimer = 0;
     if (!chunks.length) return;
-    if (!isActivelyPlaying()) return;
+    const s = window.speechSynthesis;
+    if (paused || s.paused) return;
+    if (!(ttsArmed || speaking || s.speaking || s.pending)) return;
+    updateAnchorFromActiveSpeechEstimate();
     speakFromCurrent();
   }, 100);
 }
@@ -686,6 +891,9 @@ async function loadPdfBuffer(buf) {
   orderedSpans = [];
   chunks = [];
   currentChunk = 0;
+  readAnchor = null;
+  visualAnchor = null;
+  clearPassageMarks();
   syncChunkUi();
 
   pdfDoc = await getDocument({ data: buf }).promise;
@@ -714,6 +922,78 @@ async function loadPdfBuffer(buf) {
   void renderPage(1);
 }
 
+function caretOffsetFromPoint(span, clientX, clientY) {
+  const node = textNodeForSpan(span);
+  const len = node?.textContent?.length || 0;
+  if (!node || !len) return 0;
+
+  for (let i = 0; i < len; i++) {
+    const range = document.createRange();
+    range.setStart(node, i);
+    range.setEnd(node, i + 1);
+    const rect = range.getBoundingClientRect();
+    range.detach();
+    if (!rect.width && !rect.height) continue;
+    if (clientY < rect.top - 3 || clientY > rect.bottom + 3) continue;
+    if (clientX <= rect.left + rect.width / 2) return i;
+  }
+
+  const spanRect = span.getBoundingClientRect();
+  if (spanRect.width > 0 && clientY >= spanRect.top - 4 && clientY <= spanRect.bottom + 4) {
+    const ratio = Math.min(1, Math.max(0, (clientX - spanRect.left) / spanRect.width));
+    return Math.min(len, Math.max(0, Math.round(ratio * len)));
+  }
+
+  const caretPosition = document.caretPositionFromPoint?.(clientX, clientY);
+  if (caretPosition && caretPosition.offsetNode === node) {
+    return Math.min(len, Math.max(0, caretPosition.offset));
+  }
+
+  const caretRange = document.caretRangeFromPoint?.(clientX, clientY);
+  if (caretRange && caretRange.startContainer === node) {
+    return Math.min(len, Math.max(0, caretRange.startOffset));
+  }
+
+  return len;
+}
+
+function spanAndOffsetFromNode(node, offset) {
+  const parent = node instanceof Element ? node : node?.parentElement;
+  const span = parent?.closest?.('span[role="presentation"]');
+  if (!(span instanceof HTMLSpanElement)) return null;
+
+  const spanIndex = orderedSpans.indexOf(span);
+  if (spanIndex < 0) return null;
+
+  const textOffset = node.nodeType === Node.TEXT_NODE ? offset : 0;
+  return {
+    span,
+    spanIndex,
+    offset: clampTextOffset(span, textOffset),
+  };
+}
+
+function setAnchorFromSelection() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.toString().trim()) return;
+  if (!selection.rangeCount) return;
+  if (!orderedSpans.length || !chunks.length) return;
+
+  const range = selection.getRangeAt(0);
+  const hit = spanAndOffsetFromNode(range.startContainer, range.startOffset);
+  if (!hit) return;
+
+  currentChunk = chunkIndexForSpanIndex(hit.spanIndex);
+  readAnchor = {
+    spanIndex: hit.spanIndex,
+    offset: hit.offset,
+  };
+  visualAnchor = { ...readAnchor };
+  syncChunkUi();
+  els.ttsPanel.classList.remove('hidden');
+  els.ttsToggle.setAttribute('aria-expanded', 'true');
+}
+
 function onViewerClick(ev) {
   if (!(ev.target instanceof Element)) return;
   if (ev.target.closest('.tts-panel, .tts-fab')) return;
@@ -731,13 +1011,16 @@ function onViewerClick(ev) {
   if (isActivelyPlaying()) stopSpeech(false);
 
   currentChunk = chunkIndexForSpanIndex(idx);
+  readAnchor = {
+    spanIndex: idx,
+    offset: caretOffsetFromPoint(span, ev.clientX, ev.clientY),
+  };
+  visualAnchor = { ...readAnchor };
   syncChunkUi();
 
-  const ch = chunks[currentChunk];
-  const anchor = ch ? orderedSpans[ch.start] : null;
-  if (anchor instanceof HTMLElement) {
+  if (span instanceof HTMLElement) {
     requestAnimationFrame(() => {
-      anchor.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      span.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     });
   }
 
@@ -826,6 +1109,9 @@ function wireUi() {
   });
 
   els.viewer.addEventListener('click', onViewerClick);
+  els.viewer.addEventListener('mouseup', () => {
+    window.setTimeout(setAnchorFromSelection, 0);
+  });
 
   wireSeekScrubber();
 
@@ -836,18 +1122,21 @@ function wireUi() {
 
   els.chunk.addEventListener('input', () => {
     currentChunk = Number(els.chunk.value);
+    resetReadAnchorToCurrentChunk();
     syncChunkUi();
     if (isActivelyPlaying()) speakFromCurrent();
   });
 
   els.prevChunk.addEventListener('click', () => {
     currentChunk = Math.max(0, currentChunk - 1);
+    resetReadAnchorToCurrentChunk();
     syncChunkUi();
     if (isActivelyPlaying()) speakFromCurrent();
   });
 
   els.nextChunk.addEventListener('click', () => {
     currentChunk = Math.min(chunks.length - 1, currentChunk + 1);
+    resetReadAnchorToCurrentChunk();
     syncChunkUi();
     if (isActivelyPlaying()) speakFromCurrent();
   });
@@ -856,12 +1145,8 @@ function wireUi() {
   els.stop.addEventListener('click', () => stopSpeech(false));
   els.rewindStart.addEventListener('click', () => {
     currentChunk = 0;
+    resetReadAnchorToCurrentChunk();
     syncChunkUi();
-    speakFromCurrent();
-  });
-
-  els.readFromHere?.addEventListener('click', () => {
-    if (!chunks.length) return;
     speakFromCurrent();
   });
 

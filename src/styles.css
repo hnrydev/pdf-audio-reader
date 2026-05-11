@@ -5,7 +5,6 @@
 }
 
 html[data-theme="dark"] {
-  --tts-passage-mark-bg: rgb(96 165 250 / 0.16);
   --bg: #0d0d0f;
   --bg-elevated: #16161a;
   --border: #2a2a30;
@@ -21,7 +20,6 @@ html[data-theme="dark"] {
 }
 
 html[data-theme="light"] {
-  --tts-passage-mark-bg: rgb(37 99 235 / 0.14);
   --bg: #f0f0f3;
   --bg-elevated: #ffffff;
   --border: #dcdce5;
@@ -263,11 +261,21 @@ html[data-theme="light"] .page-shell {
   cursor: default;
 }
 
-/* Current passage (click to set; moves while reading) */
-.textLayer span.tts-passage-mark {
-  background: var(--tts-passage-mark-bg) !important;
-  box-shadow: inset 4px 0 0 0 var(--accent);
-  border-radius: 2px;
+.tts-mark-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.tts-start-marker {
+  position: absolute;
+  width: 3px;
+  min-height: 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--page-shell-bg);
 }
 
 .textLayer .endOfContent {
@@ -579,34 +587,6 @@ html[data-theme="dark"] .tts-fab[aria-expanded="true"] {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.seek-read-row {
-  margin-top: 8px;
-}
-
-.read-anchor-btn {
-  padding: 6px 10px;
-  margin: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.read-anchor-btn:hover {
-  border-color: var(--muted);
-  background: var(--bg-elevated);
-}
-
-.read-anchor-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .seek-track {

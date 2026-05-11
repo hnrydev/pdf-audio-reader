@@ -88,7 +88,7 @@
         </div>
         <div
           class="field seek-field"
-          title="Click text in the PDF to choose a passage (highlighted on the page). Then use Read from here or Play. Ctrl+click (⌘ on Mac) still starts reading immediately."
+          title="Click or select text in the PDF to set the start line. Press Play to read from there. Ctrl+click (⌘ on Mac) starts immediately."
         >
           <div class="field-label seek-label-row">
             <span>Position</span>
@@ -111,9 +111,6 @@
               <div class="seek-thumb" id="seek-thumb"></div>
             </div>
             <button type="button" class="icon-btn" id="next-chunk" aria-label="Next passage">›</button>
-          </div>
-          <div class="seek-read-row">
-            <button type="button" class="read-anchor-btn" id="read-from-here">Read from here</button>
           </div>
           <input type="range" id="chunk" class="sr-only" min="0" max="0" value="0" aria-hidden="true" tabindex="-1" />
         </div>
